@@ -49,13 +49,14 @@ public Plugin myinfo =
 };
 
 int g_adminCount = 0;
-int g_connectedPlayers = 0;
-int g_botCount = 0;
-int g_idHead = 0;
-int g_checkHead = 0;
+int g_humanCount = 0;
+int g_waitingCount = 0;
 bool g_isAdmin[MAXPLAYERS+1];
+bool g_priority[MAXPLAYERS+1];
 bool g_connected[MAXPLAYERS+1];
 bool g_waiting = false;
+
+StringMap g_connectedPlayers;
 
 /* Handles to convars used by plugin */
 ConVar sm_reserved_slots;
@@ -90,7 +91,7 @@ public void OnPluginStart()
 	Handle reservedSlotsPlugin = FindPluginByFile("reservedslots.smx");
 	if(reservedSlotsPlugin != INVALID_HANDLE)
 	{
- 		ThrowError("<smartslots> ERROR: disable reservedslots before loading smartslots");
+ 		ThrowError("disable reservedslots before loading smartslots");
 	}
 	LoadTranslations("reservedslots.phrases");
 	
@@ -103,8 +104,9 @@ public void OnPluginStart()
 	sm_reserved_slots.AddChangeHook(SlotCountChanged);
 	sm_hide_slots.AddChangeHook(SlotHideChanged);
 
-	HookEvent("player_connect", event_Player_Connect, EventHookMode_Pre);
-	HookEvent("player_disconnect", event_Player_Disconnect, EventHookMode_Post);
+	HookEvent("player_disconnect", event_Player_Disconnect, EventHookMode_Pre);
+
+	g_connectedPlayers = new StringMap();
 }
 
 public void OnPluginEnd()
@@ -117,19 +119,13 @@ public void OnMapStart()
 {
 	CheckHiddenSlots();
 	g_waiting = true;
-}
-
-public void OnMapEnd()
-{
-	//PrintToServer("waiting for %i players next map", g_waitingCount);
-	g_checkHead = g_idHead;
-	//PrintToServer("players with uid > %i are new", g_checkHead);
+	g_waitingCount = g_connectedPlayers.Size;
 }
 
 public void TF2_OnWaitingForPlayersEnd()
 {
 	g_waiting = false;
-	g_connectedPlayers = GetClientCount(false) - g_botCount;
+	g_waitingCount = 0;
 }
 
 public void OnConfigsExecuted()
@@ -151,28 +147,45 @@ public Action OnTimedKick(Handle timer, any client)
 	return Plugin_Handled;
 }
 
+public void OnClientConnected(int client)
+{
+	if(!IsFakeClient(client))
+	{
+		g_connected[client] = true;
+		g_humanCount += 1;
+		//PrintToServer("client %i connected", client);
+		char id[8];
+		Format(id, 8, "%i", GetClientUserId(client));
+		//PrintToServer("id is %s", id);
+		if(g_waiting && g_connectedPlayers.ContainsKey(id))
+		{
+			g_priority[client] = true;
+			g_waitingCount -= 1;
+			//PrintToServer("whitelisted client %i", client);
+		}
+	}
+}
+
 public void OnClientPostAdminCheck(int client)
 {
 	int reserved = sm_reserved_slots.IntValue;
 
 	if (reserved > 0)
 	{
-		int uid = GetClientUserId(client);
-		//PrintToServer("checking uid %i", uid);
-		if(uid > g_checkHead)
+		if(!g_priority[client])
 		{
-			int clients = GetClientCount(false);
+			int clients = g_humanCount;
 			int limit = GetMaxHumanPlayers() - reserved;
 			int flags = GetUserFlagBits(client);
 
-			//PrintToServer("checking slots for client %N", client);
+			PrintToServer("checking slots for client %i", client);
 
 			if(g_waiting)
 			{
-				clients = g_connectedPlayers;
+				clients = clients + g_waitingCount;
 			}
 
-			//PrintToServer("current clients %i, current limit %i", clients, limit);
+			PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
 
 			int type = sm_reserve_type.IntValue;
 
@@ -247,74 +260,46 @@ public void OnClientPostAdminCheck(int client)
 		}
 		else
 		{
-			//PrintToServer("client %N is not new, bypassing slot check", client);
+			g_priority[client] = false;
+			PrintToServer("client %i has priority, allowing", client);
 		}
 	}
-}
-
-public void OnClientConnected(int client)
-{
-	//PrintToServer("on connect %i", client);
-	g_connected[client] = true;
-}
-
-public Action event_Player_Connect(Event event, const char[] name, bool dontBroadcast)
-{
-	int uid = event.GetInt("userid");
-	if(uid > g_idHead)
+	if(!IsFakeClient(client))
 	{
-		g_idHead = uid;
+		char id[8];
+		Format(id, 8, "%i", GetClientUserId(client));
+		g_connectedPlayers.SetValue(id, true);
 	}
-	else if(uid < g_checkHead) //a NEW player has been assigned id of less than what we were checking, which is only possible in the integer overflow case.
-	{
-		g_idHead = uid;
-		g_checkHead = 0;
-	}
-	if(event.GetInt("bot") == 0)
-	{
-		//PrintToServer("user %i connected", uid);
-		g_connectedPlayers += 1;
-	}
-	else
-	{
-		g_botCount += 1;
-	}
-
-
-	return Plugin_Continue;
 }
 
 public Action event_Player_Disconnect(Event event, const char[] name, bool dontBroadcast)
 {
-	int uid = event.GetInt("userid");
-	if(event.GetInt("bot") == 0)
-	{
-		int client = GetClientOfUserId(uid);
-		if(g_connected[client])
-		{
-			g_connectedPlayers -= 1;
-			g_connected[client] = false;
-			//PrintToServer("user %i disconnected", uid);
-		}
-	}
-	else
-	{
-		g_botCount += 1;
-	}
-
+	char id[8];
+	Format(id, 8, "%i", event.GetInt("userid"));
+	PrintToServer("disconnecting id %s", id);
+	bool result = g_connectedPlayers.Remove(id);
+	PrintToServer("removing id %b", result);
 	return Plugin_Continue;
 }
 
 public void OnClientDisconnect_Post(int client)
 {
+	PrintToServer("client %i disconnected", client);
 	CheckHiddenSlots();
-	//PrintToServer("on disconnect %i", client);
+
+	g_priority[client] = false;
+
+	if (g_connected[client])
+	{
+		g_connected[client] = false;
+		g_humanCount -= 1;
+	}
+
 	if (g_isAdmin[client])
 	{
 		g_adminCount--;
-		g_isAdmin[client] = false;
+		g_isAdmin[client] = false;	
 	}
-	g_connected[client] = false;
 }
 
 public void SlotCountChanged(ConVar convar, const char[] oldValue, const char[] newValue)

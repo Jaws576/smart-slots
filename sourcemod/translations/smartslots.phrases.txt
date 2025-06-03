@@ -1,0 +1,11 @@
+"Phrases"
+{
+	"Slot reserved"
+	{
+		"en"			"Dropped due to slot reservation"
+	}
+	"Server full"
+	{
+		"en"			"Server is full"
+	}
+}

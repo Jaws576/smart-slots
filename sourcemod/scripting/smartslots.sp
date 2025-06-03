@@ -44,19 +44,19 @@ public Plugin myinfo =
 	name = "Smart Slots",
 	author = "AlliedModders LLC, Jaws",
 	description = "Provides reserved slots that carry across mapchange",
-	version = SOURCEMOD_VERSION,
+	version = "v1.1",
 	url = "http://www.sourcemod.net/"
 };
 
 int g_adminCount = 0;
-int g_humanCount = 0;
+int g_connectedPlayers = 0;
 int g_waitingCount = 0;
+int g_botCount = 0;
+int g_idHead = 0;
+int g_checkHead = 0;
 bool g_isAdmin[MAXPLAYERS+1];
-bool g_priority[MAXPLAYERS+1];
 bool g_connected[MAXPLAYERS+1];
 bool g_waiting = false;
-
-StringMap g_connectedPlayers;
 
 /* Handles to convars used by plugin */
 ConVar sm_reserved_slots;
@@ -91,9 +91,9 @@ public void OnPluginStart()
 	Handle reservedSlotsPlugin = FindPluginByFile("reservedslots.smx");
 	if(reservedSlotsPlugin != INVALID_HANDLE)
 	{
- 		ThrowError("disable reservedslots before loading smartslots");
+ 		ThrowError("<smartslots> ERROR: disable reservedslots before loading smartslots");
 	}
-	LoadTranslations("reservedslots.phrases");
+	LoadTranslations("smartslots.phrases");
 	
 	sm_reserved_slots = CreateConVar("sm_reserved_slots", "0", "Number of reserved player slots", 0, true, 0.0);
 	sm_hide_slots = CreateConVar("sm_hide_slots", "0", "If set to 1, reserved slots will be hidden (subtracted from the max slot count)", 0, true, 0.0, true, 1.0);
@@ -104,9 +104,8 @@ public void OnPluginStart()
 	sm_reserved_slots.AddChangeHook(SlotCountChanged);
 	sm_hide_slots.AddChangeHook(SlotHideChanged);
 
-	HookEvent("player_disconnect", event_Player_Disconnect, EventHookMode_Pre);
-
-	g_connectedPlayers = new StringMap();
+	HookEvent("player_connect", event_Player_Connect, EventHookMode_Pre);
+	HookEvent("player_disconnect", event_Player_Disconnect, EventHookMode_Post);
 }
 
 public void OnPluginEnd()
@@ -119,7 +118,17 @@ public void OnMapStart()
 {
 	CheckHiddenSlots();
 	g_waiting = true;
-	g_waitingCount = g_connectedPlayers.Size;
+	PrintToServer("waiting for %i players this map", g_waitingCount);
+	PrintToServer("players with uid > %i are new", g_checkHead);
+}
+
+public void OnMapEnd()
+{
+	g_checkHead = g_idHead;
+	g_waitingCount = g_connectedPlayers;
+	g_botCount = 0;
+	//PrintToServer("waiting for %i players next map", g_waitingCount);
+	//PrintToServer("players with uid > %i are new", g_checkHead);
 }
 
 public void TF2_OnWaitingForPlayersEnd()
@@ -135,7 +144,7 @@ public void OnConfigsExecuted()
 
 public Action OnTimedKick(Handle timer, any client)
 {	
-	if (!client || !IsClientInGame(client))
+	if (!client || !IsClientConnected(client))
 	{
 		return Plugin_Handled;
 	}
@@ -147,45 +156,39 @@ public Action OnTimedKick(Handle timer, any client)
 	return Plugin_Handled;
 }
 
-public void OnClientConnected(int client)
-{
-	if(!IsFakeClient(client))
-	{
-		g_connected[client] = true;
-		g_humanCount += 1;
-		//PrintToServer("client %i connected", client);
-		char id[8];
-		Format(id, 8, "%i", GetClientUserId(client));
-		//PrintToServer("id is %s", id);
-		if(g_waiting && g_connectedPlayers.ContainsKey(id))
-		{
-			g_priority[client] = true;
-			g_waitingCount -= 1;
-			//PrintToServer("whitelisted client %i", client);
-		}
-	}
-}
-
 public void OnClientPostAdminCheck(int client)
 {
 	int reserved = sm_reserved_slots.IntValue;
 
 	if (reserved > 0)
 	{
-		if(!g_priority[client])
+		if(g_isAdmin[client])
 		{
-			int clients = g_humanCount;
-			int limit = GetMaxHumanPlayers() - reserved;
+			PrintToServer("verifying potential admin %N", client);
+
 			int flags = GetUserFlagBits(client);
 
-			//PrintToServer("checking slots for client %i", client);
+			if (flags & ADMFLAG_ROOT || flags & ADMFLAG_RESERVATION)
+			{
+				PrintToServer("verified admin %N", client);
+				g_isAdmin[client] = true;
+				g_adminCount++;
+			}
+			else
+			{
+				PrintToServer("WARNING: Player %N appears to have spoofed an admin ID!", client);
+				g_isAdmin[client] = false;
+			}
+
+			int clients = GetClientCount(false) - g_botCount;
+			int limit = GetMaxHumanPlayers() - reserved;
 
 			if(g_waiting)
 			{
 				clients = clients + g_waitingCount;
 			}
 
-			//PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
+			PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
 
 			int type = sm_reserve_type.IntValue;
 
@@ -246,59 +249,140 @@ public void OnClientPostAdminCheck(int client)
 						if (target)
 						{
 							/* Kick public player to free the reserved slot again */
-							CreateTimer(0.1, OnTimedKick, target);
+							KickClient(client, "%T", "Slot reserved", client);
+							CheckHiddenSlots();
 						}
 					}
 					else
 					{
 						/* Kick player because there are no public slots left */
-						CreateTimer(0.1, OnTimedKick, client);
+						KickClient(client, "%T", "Slot reserved", client);
+						CheckHiddenSlots();
 						return;
 					}
 				}
 			}
 		}
+	}
+}
+
+public bool OnClientConnect(int client, char[] rejectmsg, int maxlen)
+{
+	int uid = GetClientUserId(client);
+	//PrintToServer("on connecting %i, uid %i", client, uid);
+
+	if(IsFakeClient(client))
+	{
+		return true;
+	}
+
+	if(g_waiting && uid <= g_checkHead)
+	{
+		PrintToServer("client %i, uid %i not new, skipping slot check", client, uid);
+		g_waitingCount -= 1;
+		g_connected[client] = true;
+		return true;
+	}
+
+	int clients = GetClientCount(false) - g_botCount;
+	int reserved = sm_reserved_slots.IntValue;
+	int limit = GetMaxHumanPlayers() - reserved;
+
+	//PrintToServer("checking slots for client %i, uid %i", client, uid);
+
+	if(g_waiting)
+	{
+		clients = clients + g_waitingCount;
+	}
+
+	PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
+
+	if(clients > limit)
+	{
+		char authid[32];
+		GetClientAuthId(client, AuthId_Steam2, authid, 32, false);
+		//PrintToServer("auth = %s", authid);
+		AdminId admin = FindAdminByIdentity(AUTHMETHOD_STEAM, authid); //TODO: possible risk of DOS attack by flooding connect requests as we check the admin list each time. Cache connect attempts?
+
+		if (admin == INVALID_ADMIN_ID)
+		{
+			PrintToServer("dropping client %i as we are full and they are not an admin", client);
+			FormatEx(rejectmsg, maxlen, "%T", "Server full", client);
+			return false;
+		}
 		else
 		{
-			g_priority[client] = false;
-			//PrintToServer("client %i has priority, allowing", client);
+			int flags = admin.GetFlags(Access_Effective);
+			if (flags & ADMFLAG_ROOT || flags & ADMFLAG_RESERVATION)
+			{
+				g_isAdmin[client] = true;
+			}
+			else
+			{
+				PrintToServer("dropping client %i as we are full and they have no slot access", client);
+				FormatEx(rejectmsg, maxlen, "%T", "Server full", client);
+				return false;
+			}
 		}
 	}
-	if(!IsFakeClient(client))
+	g_connected[client] = true;
+	return true;
+}
+
+public Action event_Player_Connect(Event event, const char[] name, bool dontBroadcast)
+{
+	int uid = event.GetInt("userid");
+	if(uid > g_idHead)
 	{
-		char id[8];
-		Format(id, 8, "%i", GetClientUserId(client));
-		g_connectedPlayers.SetValue(id, true);
+		g_idHead = uid;
 	}
+	else if(uid < g_checkHead) //a NEW player has been assigned id of less than what we were checking, which is only possible in the integer overflow case.
+	{
+		g_idHead = uid;
+		g_checkHead = 0;
+	}
+	if(event.GetInt("bot") == 0)
+	{
+		//PrintToServer("user %i connected", uid);
+		g_connectedPlayers += 1;
+	}
+	else
+	{
+		g_botCount += 1;
+	}
+
+	return Plugin_Continue;
 }
 
 public Action event_Player_Disconnect(Event event, const char[] name, bool dontBroadcast)
 {
-	char id[8];
-	Format(id, 8, "%i", event.GetInt("userid"));
-	//PrintToServer("disconnecting id %s", id);
-	bool result = g_connectedPlayers.Remove(id);
-	//PrintToServer("removing id %b", result);
+	int uid = event.GetInt("userid");
+	if(event.GetInt("bot") == 0)
+	{
+		int client = GetClientOfUserId(uid);
+		if(g_connected[client]) //prevents duplicate firing of events for accurate counting.
+		{
+			g_connectedPlayers -= 1;
+			g_connected[client] = false;
+			//PrintToServer("user %i disconnected", uid);
+		}
+	}
+	else
+	{
+		g_botCount -= 1;
+	}
+
 	return Plugin_Continue;
 }
 
 public void OnClientDisconnect_Post(int client)
 {
-	//PrintToServer("client %i disconnected", client);
 	CheckHiddenSlots();
-
-	g_priority[client] = false;
-
-	if (g_connected[client])
-	{
-		g_connected[client] = false;
-		g_humanCount -= 1;
-	}
-
+	//PrintToServer("on disconnect %i", client);
 	if (g_isAdmin[client])
 	{
 		g_adminCount--;
-		g_isAdmin[client] = false;	
+		g_isAdmin[client] = false;
 	}
 }
 
@@ -333,22 +417,13 @@ void CheckHiddenSlots()
 {
 	if (sm_hide_slots.BoolValue)
 	{		
-		SetVisibleMaxSlots(GetClientCount(false), GetMaxHumanPlayers() - sm_reserved_slots.IntValue);
+		sv_visiblemaxplayers.IntValue = GetMaxHumanPlayers() - sm_reserved_slots.IntValue;
 	}
 }
 
 void SetVisibleMaxSlots(int clients, int limit)
 {
-	int num = clients;
-	
-	if (clients == GetMaxHumanPlayers())
-	{
-		num = GetMaxHumanPlayers();
-	} else if (clients < limit) {
-		num = limit;
-	}
-	
-	sv_visiblemaxplayers.IntValue = num;
+	sv_visiblemaxplayers.IntValue = limit;
 }
 
 void ResetVisibleMax()
