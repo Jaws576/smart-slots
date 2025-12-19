@@ -34,7 +34,7 @@
 #pragma semicolon 1
 
 #include <sourcemod>
-#include <tf2c>
+//#include <tf2c>
 #include <sdktools>
 
 #pragma newdecls required
@@ -43,20 +43,18 @@ public Plugin myinfo =
 {
 	name = "Smart Slots",
 	author = "AlliedModders LLC, Jaws",
-	description = "Provides reserved slots that carry across mapchange",
-	version = "v1.1",
+	description = "Provides reserved slots at an earlier connect stage",
+	version = "v1.15",
 	url = "http://www.sourcemod.net/"
 };
 
 int g_adminCount = 0;
 int g_connectedPlayers = 0;
-int g_waitingCount = 0;
 int g_botCount = 0;
 int g_idHead = 0;
 int g_checkHead = 0;
 bool g_isAdmin[MAXPLAYERS+1];
 bool g_connected[MAXPLAYERS+1];
-bool g_waiting = false;
 
 /* Handles to convars used by plugin */
 ConVar sm_reserved_slots;
@@ -117,24 +115,14 @@ public void OnPluginEnd()
 public void OnMapStart()
 {
 	CheckHiddenSlots();
-	g_waiting = true;
-	PrintToServer("waiting for %i players this map", g_waitingCount);
 	PrintToServer("players with uid > %i are new", g_checkHead);
 }
 
 public void OnMapEnd()
 {
 	g_checkHead = g_idHead;
-	g_waitingCount = g_connectedPlayers;
 	g_botCount = 0;
-	//PrintToServer("waiting for %i players next map", g_waitingCount);
-	//PrintToServer("players with uid > %i are new", g_checkHead);
-}
-
-public void TF2_OnWaitingForPlayersEnd()
-{
-	g_waiting = false;
-	g_waitingCount = 0;
+	PrintToServer("players with uid > %i are new", g_checkHead);
 }
 
 public void OnConfigsExecuted()
@@ -183,12 +171,7 @@ public void OnClientPostAdminCheck(int client)
 			int clients = GetClientCount(false) - g_botCount;
 			int limit = GetMaxHumanPlayers() - reserved;
 
-			if(g_waiting)
-			{
-				clients = clients + g_waitingCount;
-			}
-
-			PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
+			PrintToServer("current clients %i, current limit %i", clients, limit);
 
 			int type = sm_reserve_type.IntValue;
 
@@ -276,10 +259,9 @@ public bool OnClientConnect(int client, char[] rejectmsg, int maxlen)
 		return true;
 	}
 
-	if(g_waiting && uid <= g_checkHead)
+	if(uid <= g_checkHead)
 	{
 		PrintToServer("client %i, uid %i not new, skipping slot check", client, uid);
-		g_waitingCount -= 1;
 		g_connected[client] = true;
 		return true;
 	}
@@ -290,19 +272,14 @@ public bool OnClientConnect(int client, char[] rejectmsg, int maxlen)
 
 	//PrintToServer("checking slots for client %i, uid %i", client, uid);
 
-	if(g_waiting)
-	{
-		clients = clients + g_waitingCount;
-	}
-
-	PrintToServer("current clients %i, current limit %i, waiting for %i", clients, limit, g_waitingCount);
+	PrintToServer("current clients %i, current limit %i", clients, limit);
 
 	if(clients > limit)
 	{
 		char authid[32];
 		GetClientAuthId(client, AuthId_Steam2, authid, 32, false);
 		//PrintToServer("auth = %s", authid);
-		AdminId admin = FindAdminByIdentity(AUTHMETHOD_STEAM, authid); //TODO: possible risk of DOS attack by flooding connect requests as we check the admin list each time. Cache connect attempts?
+		AdminId admin = FindAdminByIdentity(AUTHMETHOD_STEAM, authid);
 
 		if (admin == INVALID_ADMIN_ID)
 		{
@@ -502,3 +479,4 @@ int SelectKickClient()
 	
 	return highestValueId;
 }
+
