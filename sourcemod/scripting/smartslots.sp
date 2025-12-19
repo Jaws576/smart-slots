@@ -44,7 +44,7 @@ public Plugin myinfo =
 	name = "Smart Slots",
 	author = "AlliedModders LLC, Jaws",
 	description = "Provides reserved slots at an earlier connect stage",
-	version = "v1.15",
+	version = "v1.16",
 	url = "http://www.sourcemod.net/"
 };
 
@@ -479,4 +479,5 @@ int SelectKickClient()
 	
 	return highestValueId;
 }
+
 
